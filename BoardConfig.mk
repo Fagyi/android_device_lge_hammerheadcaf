@@ -130,6 +130,7 @@ BOARD_SEPOLICY_UNION += \
     file.te \
     healthd.te \
     hostapd.te \
+    init.te \
     mediaserver.te \
     mm-qcamerad.te \
     mpdecision.te \
