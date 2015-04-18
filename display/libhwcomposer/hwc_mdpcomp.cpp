@@ -19,7 +19,7 @@
 #include <math.h>
 #include "hwc_mdpcomp.h"
 #include <sys/ioctl.h>
-#include "external.h"
+#include "hdmi.h"
 #include "virtual.h"
 #include "qdMetaData.h"
 #include "mdp_version.h"
@@ -314,9 +314,9 @@ bool MDPComp::LayerCache::isSameFrame(const FrameInfo& curFrame,
 bool MDPComp::isSupportedForMDPComp(hwc_context_t *ctx, hwc_layer_1_t* layer) {
     private_handle_t *hnd = (private_handle_t *)layer->handle;
     if((not isYuvBuffer(hnd) and has90Transform(layer)) or
-        (not isValidDimension(ctx,layer))
-        //More conditions here, SKIP, sRGB+Blend etc
-        ) {
+        (not isValidDimension(ctx,layer)) ||
+        isSkipLayer(layer)) {
+        //More conditions here, sRGB+Blend etc
         return false;
     }
     return true;
@@ -331,7 +331,7 @@ bool MDPComp::isValidDimension(hwc_context_t *ctx, hwc_layer_1_t *layer) {
             // Color layer
             return true;
         }
-        ALOGE("%s: layer handle is NULL", __FUNCTION__);
+        ALOGD_IF(isDebug(), "%s: layer handle is NULL", __FUNCTION__);
         return false;
     }
 
@@ -431,6 +431,13 @@ bool MDPComp::isFrameDoable(hwc_context_t *ctx) {
         //1 Padding round to shift pipes across mixers
         ALOGD_IF(isDebug(),"%s: MDP Comp. video transition padding round",
                 __FUNCTION__);
+        ret = false;
+    } else if(qdutils::MDPVersion::getInstance().is8x26() &&
+              !mDpy && isSecondaryAnimating(ctx) &&
+              (isYuvPresent(ctx,HWC_DISPLAY_EXTERNAL) ||
+               isYuvPresent(ctx,HWC_DISPLAY_VIRTUAL))) {
+        ALOGD_IF(isDebug(),"%s: Display animation in progress",
+                 __FUNCTION__);
         ret = false;
     } else if(isSecondaryConfiguring(ctx)) {
         ALOGD_IF( isDebug(),"%s: External Display connection is pending",
@@ -569,10 +576,11 @@ bool MDPComp::tryFullFrame(hwc_context_t *ctx,
         return false;
     }
 
-    if(isSkipPresent(ctx, mDpy)) {
-        ALOGD_IF(isDebug(),"%s: SKIP present: %d",
-                __FUNCTION__,
-                isSkipPresent(ctx, mDpy));
+    if(!mDpy && isSecondaryAnimating(ctx) &&
+       (isYuvPresent(ctx,HWC_DISPLAY_EXTERNAL) ||
+       isYuvPresent(ctx,HWC_DISPLAY_VIRTUAL)) ) {
+        ALOGD_IF(isDebug(),"%s: Display animation in progress",
+                 __FUNCTION__);
         return false;
     }
 
@@ -900,7 +908,8 @@ bool MDPComp::partialMDPComp(hwc_context_t *ctx, hwc_display_contents_1_t* list)
     }
 
     bool ret = false;
-    if(list->flags & HWC_GEOMETRY_CHANGED) { //Try load based first
+    if(isSkipPresent(ctx, mDpy) or list->flags & HWC_GEOMETRY_CHANGED) {
+        //Try load based first
         ret =   loadBasedComp(ctx, list) or
                 cacheBasedComp(ctx, list);
     } else {
@@ -1091,6 +1100,11 @@ bool MDPComp::videoOnlyComp(hwc_context_t *ctx,
 
     if(!postHeuristicsHandling(ctx, list)) {
         ALOGD_IF(isDebug(), "post heuristic handling failed");
+        if(errno == ENOBUFS) {
+            ALOGD_IF(isDebug(), "SMP Allocation failed");
+            //On SMP allocation failure in video only comp add padding round
+            ctx->isPaddingRound = true;
+        }
         reset(ctx);
         return false;
     }
